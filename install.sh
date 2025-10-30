@@ -408,8 +408,12 @@ create_profile() {
         print_status "Пароль: $auth_pass"
 
         # Создание файла паролей для Squid
-        htpasswd -bc "/etc/squid/auth_${profile_name}" "$username" "$auth_pass" > /dev/null 2>&1
-        chmod 644 "/etc/squid/auth_${profile_name}"
+        htpasswd -bc "/etc/squid/auth_${profile_name}" "$username" "$auth_pass" > /dev/null 2>&1 || {
+            print_error "Ошибка при создании файла паролей"
+            log_message "ERROR" "htpasswd failed for profile $profile_name"
+            return 1
+        }
+        chmod 644 "/etc/squid/auth_${profile_name}" || true
     fi
 
     save_profile "$profile_name" "$port" "$username" "$auth_pass" "$has_auth"
@@ -485,7 +489,7 @@ save_profile() {
                 name: $name,
                 port: ($port | tonumber),
                 username: $username,
-                password: $auth_pass,
+                password: $password,
                 auth: $auth,
                 created: $created
             }')
