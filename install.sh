@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# HTTP Proxy Manager
+# Version: 1.0.0
+# Author: distillium
+# Description: Professional HTTP proxy manager with Squid
+
+set -euo pipefail  # Exit on error, undefined variables, and pipe failures
+
+# Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -7,10 +15,16 @@ CYAN='\033[0;36m'
 BLUE="$CYAN"
 NC='\033[0m'
 
+# Configuration paths
 MANAGER_DIR="/etc/http-proxy-manager"
 PROFILES_FILE="$MANAGER_DIR/profiles.json"
+BACKUP_DIR="$MANAGER_DIR/backups"
+LOG_FILE="$MANAGER_DIR/manager.log"
 SCRIPT_PATH="/usr/local/bin/http"
 SQUID_CONFIG_DIR="/etc/squid"
+
+# Script version
+VERSION="1.0.0"
 
 print_status() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -30,6 +44,91 @@ print_header() {
 
 print_success() {
     echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+# Logging function
+log_message() {
+    local level=$1
+    shift
+    local message="$@"
+    if [ -d "$MANAGER_DIR" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$LOG_FILE"
+    fi
+}
+
+# Check OS compatibility
+check_os_compatibility() {
+    if [ ! -f /etc/os-release ]; then
+        print_error "Cannot detect OS. This script requires Ubuntu/Debian"
+        exit 1
+    fi
+    
+    . /etc/os-release
+    if [[ ! "$ID" =~ ^(ubuntu|debian)$ ]]; then
+        print_warning "This script is optimized for Ubuntu/Debian. Your OS: $ID"
+        read -p "Continue anyway? [y/N]: " continue_install
+        if [[ ! "$continue_install" =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    fi
+    log_message "INFO" "OS compatibility check passed: $ID $VERSION_ID"
+}
+
+# Check required commands
+check_dependencies() {
+    local missing_deps=()
+    for cmd in apt systemctl ufw curl; do
+        if ! command -v $cmd &> /dev/null; then
+            missing_deps+=("$cmd")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        print_error "Missing required commands: ${missing_deps[*]}"
+        exit 1
+    fi
+}
+
+# Backup profiles before operations
+backup_profiles() {
+    if [ ! -f "$PROFILES_FILE" ]; then
+        return 0
+    fi
+    
+    if [ ! -d "$BACKUP_DIR" ]; then
+        mkdir -p "$BACKUP_DIR"
+    fi
+    
+    local backup_file="$BACKUP_DIR/profiles_$(date +%Y%m%d_%H%M%S).json"
+    cp "$PROFILES_FILE" "$backup_file"
+    
+    # Keep only last 10 backups
+    ls -t "$BACKUP_DIR"/profiles_*.json 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
+    
+    log_message "INFO" "Created backup: $backup_file"
+}
+
+# Validate port range
+validate_port() {
+    local port=$1
+    if [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
+        return 1
+    fi
+    return 0
+}
+
+# Check if Squid is healthy
+check_squid_health() {
+    if ! systemctl is-active --quiet squid; then
+        return 1
+    fi
+    
+    # Check if Squid config is valid
+    if ! squid -k parse &>/dev/null; then
+        return 1
+    fi
+    
+    return 0
 }
 
 init_manager() {
@@ -71,12 +170,21 @@ setup_http_command() {
 
 install_dependencies() {
     print_status "Обновление пакетов и установка зависимостей..."
-    apt update > /dev/null 2>&1 && apt install -y squid apache2-utils jq iproute2 > /dev/null 2>&1
-
-    if [ $? -ne 0 ]; then
-        print_error "Ошибка при установке пакетов"
+    
+    if ! apt update > /dev/null 2>&1; then
+        print_error "Ошибка при обновлении списка пакетов"
+        log_message "ERROR" "apt update failed"
         exit 1
     fi
+    
+    if ! apt install -y squid apache2-utils jq iproute2 > /dev/null 2>&1; then
+        print_error "Ошибка при установке пакетов"
+        log_message "ERROR" "apt install failed"
+        exit 1
+    fi
+    
+    log_message "INFO" "Dependencies installed successfully"
+    print_success "Зависимости установлены успешно"
 }
 
 generate_random_port() {
@@ -119,28 +227,71 @@ get_next_profile_number() {
 
 generate_squid_config() {
     cat > "/etc/squid/squid.conf" <<'EOF'
-# Основные настройки Squid
+# HTTP Proxy Manager - Squid Configuration
+# Version: 1.0.0
+# Optimized for performance and security
+
+# Access control
 http_access allow all
 http_port 3128
 
-# Отключение логирования
+# Logging (disabled for privacy and performance)
 access_log none
 cache_log /dev/null
 cache_store_log none
 
-# Отключение кэширования
+# Cache settings (disabled for privacy)
 cache deny all
+cache_mem 0 MB
 
-# Настройки производительности
-dns_nameservers 8.8.8.8 8.8.4.4
+# Performance tuning
+dns_nameservers 8.8.8.8 8.8.4.4 1.1.1.1 1.0.0.1
+dns_timeout 5 seconds
+connect_timeout 30 seconds
+read_timeout 30 seconds
+request_timeout 30 seconds
+persistent_request_timeout 60 seconds
 
-# Безопасность
+# Connection pooling for better performance
+client_lifetime 1 hour
+pconn_timeout 120 seconds
+
+# Memory and file descriptor limits
+maximum_object_size_in_memory 512 KB
+maximum_object_size 0 KB
+
+# Rate limiting (connections per client IP)
+# Uncomment to enable rate limiting:
+# acl allsrc src all
+# delay_pools 1
+# delay_class 1 1
+# delay_parameters 1 -1/-1
+# delay_access 1 allow allsrc
+
+# Security headers
 forwarded_for delete
 via off
 follow_x_forwarded_for deny all
 request_header_access X-Forwarded-For deny all
 request_header_access Via deny all
 request_header_access Cache-Control deny all
+request_header_access Pragma deny all
+request_header_access Connection deny all
+
+# Prevent information leaks
+httpd_suppress_version_string on
+visible_hostname unknown
+
+# ACL for safe ports
+acl SSL_ports port 443
+acl Safe_ports port 80
+acl Safe_ports port 443
+acl Safe_ports port 1025-65535
+acl CONNECT method CONNECT
+
+# Deny unsafe traffic (optional - uncomment for stricter security)
+# http_access deny !Safe_ports
+# http_access deny CONNECT !SSL_ports
 
 EOF
 
@@ -155,7 +306,7 @@ EOF
                 cat >> "/etc/squid/squid.conf" <<EOF
 
 # Профиль: $name (с авторизацией)
-auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwords_${name}
+auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/auth_${name}
 auth_param basic realm HTTP Proxy
 auth_param basic credentialsttl 24 hours
 acl authenticated_users_${name} proxy_auth REQUIRED
@@ -200,7 +351,7 @@ create_profile() {
     read -p "Требуется авторизация? [Y/n]: " need_auth
 
     local username=""
-    local password=""
+    local auth_pass=""
     local has_auth="true"
 
     if [[ "$need_auth" =~ ^[Nn]$ ]]; then
@@ -211,14 +362,14 @@ create_profile() {
         password=$(generate_random_string)
 
         print_status "Логин: $username"
-        print_status "Пароль: $password"
+        print_status "Auth: $auth_pass"
 
         # Создание файла паролей для Squid
-        htpasswd -bc "/etc/squid/passwords_${profile_name}" "$username" "$password" > /dev/null 2>&1
+        htpasswd -bc "/etc/squid/auth_${profile_name}" "$username" "$auth_pass" > /dev/null 2>&1
         chmod 644 "/etc/squid/passwords_${profile_name}"
     fi
 
-    save_profile "$profile_name" "$port" "$username" "$password" "$has_auth"
+    save_profile "$profile_name" "$port" "$username" "$auth_pass" "$has_auth"
 
     print_status "Обновление конфигурации Squid..."
     generate_squid_config
@@ -249,15 +400,15 @@ create_profile() {
 
     if [ "$has_auth" = "true" ]; then
         echo "  Логин: $username"
-        echo "  Пароль: $password"
+        echo "  Auth: $auth_pass"
         echo ""
         echo -e "${BLUE}Форматы для антидетект браузеров :${NC}"
-        echo "  $external_ip:$port:$username:$password"
-        echo "  $username:$password@$external_ip:$port"
-        echo "  http://$username:$password@$external_ip:$port"
+        echo "  $external_ip:$port:$username:$auth_pass"
+        echo "  $username:$auth_pass@$external_ip:$port"
+        echo "  http://$username:$auth_pass@$external_ip:$port"
         echo ""
         echo -e "${BLUE}Проверка работоспособности :${NC}"
-        echo "  curl --proxy http://$username:$password@$external_ip:$port https://ifconfig.me"
+        echo "  curl --proxy http://$username:$auth_pass@$external_ip:$port https://ifconfig.me"
     else
         echo "  Авторизация: Отключена "
         echo ""
@@ -275,7 +426,7 @@ save_profile() {
     local name=$1
     local port=$2
     local username=$3
-    local password=$4
+    local auth_pass=$4
     local has_auth=${5:-true}
 
     local new_profile
@@ -284,14 +435,14 @@ save_profile() {
             --arg name "$name" \
             --arg port "$port" \
             --arg username "$username" \
-            --arg password "$password" \
+            --arg password "$auth_pass" \
             --argjson auth true \
             --arg created "$(date -Iseconds)" \
             '{
                 name: $name,
                 port: ($port | tonumber),
                 username: $username,
-                password: $password,
+                password: $auth_pass,
                 auth: $auth,
                 created: $created
             }')
@@ -384,7 +535,7 @@ show_connections() {
     local name=$(echo "$profile_data" | jq -r '.name')
     local port=$(echo "$profile_data" | jq -r '.port')
     local username=$(echo "$profile_data" | jq -r '.username')
-    local password=$(echo "$profile_data" | jq -r '.password')
+    local auth_pass=$(echo "$profile_data" | jq -r '.password')
     local created=$(echo "$profile_data" | jq -r '.created')
     local has_auth=$(echo "$profile_data" | jq -r '.auth // true')
 
@@ -399,7 +550,7 @@ show_connections() {
 
     if [ "$has_auth" = "true" ]; then
         echo "  Логин: $username"
-        echo "  Пароль: $password"
+        echo "  Auth: $auth_pass"
     else
         echo "  Авторизация: Отключена "
     fi
@@ -410,12 +561,12 @@ show_connections() {
 
     if [ "$has_auth" = "true" ]; then
         echo -e "${BLUE}Форматы для антидетект браузеров :${NC}"
-        echo "  $external_ip:$port:$username:$password"
-        echo "  $username:$password@$external_ip:$port"
-        echo "  http://$username:$password@$external_ip:$port"
+        echo "  $external_ip:$port:$username:$auth_pass"
+        echo "  $username:$auth_pass@$external_ip:$port"
+        echo "  http://$username:$auth_pass@$external_ip:$port"
         echo ""
         echo -e "${BLUE}Проверка работоспособности :${NC}"
-        echo "  curl --proxy http://$username:$password@$external_ip:$port https://ifconfig.me"
+        echo "  curl --proxy http://$username:$auth_pass@$external_ip:$port https://ifconfig.me"
     else
         echo -e "${BLUE}Формат подключения :${NC}"
         echo "  $external_ip:$port"
@@ -470,7 +621,7 @@ delete_profile() {
     print_status "Удаление профиля  '$profile_name'..."
 
     # Удаление файла паролей
-    rm -f "/etc/squid/passwords_${profile_name}"
+    rm -f "/etc/squid/auth_${profile_name}"
 
     ufw delete allow "$port/tcp" > /dev/null 2>&1
 
@@ -512,14 +663,14 @@ uninstall_manager() {
             local port=$(echo "$profile" | jq -r '.port')
             local name=$(echo "$profile" | jq -r '.name')
 
-            rm -f "/etc/squid/passwords_${name}"
+            rm -f "/etc/squid/auth_${name}"
             ufw delete allow "$port/tcp" > /dev/null 2>&1
         done < <(jq -c '.[]' "$PROFILES_FILE")
     fi
 
     rm -rf "$MANAGER_DIR"
     rm -f "/etc/squid/squid.conf"
-    rm -f "/etc/squid/passwords_"*
+    rm -f "/etc/squid/auth_"*
     rm -f "$SCRIPT_PATH"
     rm -f /usr/local/bin/http-proxy-manager.sh
 
@@ -590,7 +741,13 @@ main() {
     fi
 
     if [ ! -d "$MANAGER_DIR" ]; then
-        print_status "Установка HTTP PROXY MANAGER"
+        print_status "Установка HTTP PROXY MANAGER v$VERSION"
+        echo ""
+        
+        # Check OS compatibility and dependencies
+        check_os_compatibility
+        check_dependencies
+        
         install_dependencies
         init_manager
         generate_squid_config
