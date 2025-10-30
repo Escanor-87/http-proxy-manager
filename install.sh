@@ -723,9 +723,6 @@ uninstall_manager() {
 }
 
 show_main_menu() {
-    # Check for updates on first run
-    check_for_updates
-    
     while true; do
         clear
         print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
