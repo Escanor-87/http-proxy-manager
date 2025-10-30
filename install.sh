@@ -2,7 +2,7 @@
 
 # HTTP Proxy Manager
 # Version: 1.0.0
-# Author: distillium
+# Author: Escanor
 # Description: Professional HTTP proxy manager with Squid
 
 set -euo pipefail  # Exit on error, undefined variables, and pipe failures
@@ -129,6 +129,49 @@ check_squid_health() {
     fi
     
     return 0
+}
+
+# Check for updates from GitHub
+check_for_updates() {
+    local repo_url="https://raw.githubusercontent.com/Escanor-87/http-proxy-manager/main/install.sh"
+    local current_version="$VERSION"
+    
+    # Try to fetch remote version
+    local remote_version=$(curl -s --max-time 3 "$repo_url" | grep -m1 "^VERSION=" | cut -d'"' -f2 2>/dev/null)
+    
+    if [ -z "$remote_version" ]; then
+        return 0  # Cannot check, skip silently
+    fi
+    
+    if [ "$remote_version" != "$current_version" ]; then
+        echo ""
+        print_warning "Доступна новая версия: $remote_version (текущая: $current_version)"
+        echo ""
+        read -p "Хотите обновиться сейчас? [y/N]: " do_update
+        
+        if [[ "$do_update" =~ ^[Yy]$ ]]; then
+            print_status "Скачивание обновления..."
+            
+            # Download new version
+            local temp_file="/tmp/http-proxy-manager-update.sh"
+            if curl -s -o "$temp_file" "$repo_url"; then
+                chmod +x "$temp_file"
+                
+                # Replace current script
+                cp "$temp_file" /usr/local/bin/http-proxy-manager.sh
+                rm -f "$temp_file"
+                
+                print_success "Обновление установлено! Перезапуск..."
+                log_message "INFO" "Updated from $current_version to $remote_version"
+                
+                sleep 1
+                exec /usr/local/bin/http-proxy-manager.sh
+            else
+                print_error "Ошибка при скачивании обновления"
+                return 1
+            fi
+        fi
+    fi
 }
 
 init_manager() {
@@ -358,15 +401,15 @@ create_profile() {
         has_auth="false"
         print_status "Профиль без авторизации"
     else
-        username="user$profile_num"
-        password=$(generate_random_string)
+        username=$(generate_random_string 8)
+        auth_pass=$(generate_random_string 12)
 
         print_status "Логин: $username"
-        print_status "Auth: $auth_pass"
+        print_status "Пароль: $auth_pass"
 
         # Создание файла паролей для Squid
         htpasswd -bc "/etc/squid/auth_${profile_name}" "$username" "$auth_pass" > /dev/null 2>&1
-        chmod 644 "/etc/squid/passwords_${profile_name}"
+        chmod 644 "/etc/squid/auth_${profile_name}"
     fi
 
     save_profile "$profile_name" "$port" "$username" "$auth_pass" "$has_auth"
@@ -680,9 +723,15 @@ uninstall_manager() {
 }
 
 show_main_menu() {
+    # Check for updates on first run
+    check_for_updates
+    
     while true; do
         clear
-        print_header "HTTP PROXY MANAGER by distillium"
+        print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        print_header "    HTTP PROXY MANAGER by Escanor"
+        print_header "    Version: $VERSION"
+        print_header "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
         echo -e "${CYAN}1.${NC} Показать все подключения "
         echo -e "${CYAN}2.${NC} Создать новое подключение "
