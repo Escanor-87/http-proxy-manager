@@ -774,11 +774,11 @@ main() {
     show_main_menu
 }
 
-if [ "$1" = "menu" ] || [ "$1" = "" ]; then
+if [ "${1:-}" = "menu" ] || [ "${1:-}" = "" ]; then
     main
-elif [ "$1" = "list" ]; then
+elif [ "${1:-}" = "list" ]; then
     show_connections
-elif [ "$1" = "create" ]; then
+elif [ "${1:-}" = "create" ]; then
     if [[ $EUID -ne 0 ]]; then
         print_error "Этот скрипт должен быть запущен с правами root"
         exit 1
